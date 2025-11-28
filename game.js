@@ -11,7 +11,7 @@ canvas.width = 1280;
 canvas.height = 720;
 
 // ==========================================
-// 1. НАСТРОЙКИ КАРТЫ (Land_tiles.jpeg)
+// 1. НАСТРОЙКИ КАРТЫ
 // ==========================================
 const TILE_SRC_SIZE = 96;
 const CELL_STEP = 124;
@@ -19,11 +19,9 @@ const OFFSET_X = 28;
 const OFFSET_Y = 29;
 
 // ==========================================
-// 2. НАСТРОЙКИ ИГРОКА (player_Vova.png)
+// 2. НАСТРОЙКИ ИГРОКА
 // ==========================================
-// У нас теперь полоска из 4 кадров.
-// Размеры вычислим автоматически при отрисовке (width / 4).
-const ANIM_SPEED = 8; // Чуть замедлим, чтобы ходьба была плавной
+const ANIM_SPEED = 8;
 
 // ==========================================
 //  ИГРОВЫЕ ПЕРЕМЕННЫЕ
@@ -31,23 +29,27 @@ const ANIM_SPEED = 8; // Чуть замедлим, чтобы ходьба бы
 const TILE_SIZE = 96;
 const gravity = 1;
 let cameraX = 0;
+let score = 0;
 
 const player = {
   x: 200,
   y: 200,
-  w: 50,   // Ширина хитбокса (чуть уже для Вовы)
-  h: 130,  // Высота хитбокса (Вова высокий)
+  w: 50,
+  h: 130,
   vx: 0,
   vy: 0,
   speed: 7,
   jump: 22,
   onGround: false,
   facingRight: true,
-  frame: 0,  // Текущий кадр (0 - стоит, 1-3 - идет)
+  frame: 0,
   timer: 0
 };
 
 const keys = { left: false, right: false, up: false };
+
+// Массив монеток (заполнится при загрузке уровня)
+let coins = [];
 
 // ============================
 //  ЗАГРУЗКА РЕСУРСОВ
@@ -58,14 +60,20 @@ bgImage.src = "img/bg_sky.png";
 const tilesImage = new Image();
 tilesImage.src = "img/Land_tiles.jpeg";
 
-// --- ИЗМЕНЕНО: Загружаем Вову ---
 const playerImage = new Image();
 playerImage.src = "img/player_Vova.png";
 
-// Музыка
+const coinImage = new Image();
+coinImage.src = "img/coin.png";
+
+// Фоновая музыка
 const bgMusic = new Audio("snd/ONL - Without me.mp3");
 bgMusic.loop = true;
 bgMusic.volume = 0.4;
+
+// --- НОВОЕ: Звук монетки ---
+const coinSound = new Audio("snd/coin.mp3");
+coinSound.volume = 0.6; // Чуть громче фона, чтобы хорошо было слышно
 
 let currentLevel = null;
 
@@ -89,7 +97,6 @@ async function loadLevel(path) {
     return await response.json();
   } catch (e) {
     console.error(e);
-    alert("Ошибка загрузки уровня! Проверь имя файла .lvl");
     return null;
   }
 }
@@ -98,10 +105,25 @@ Promise.all([
   new Promise(r => bgImage.onload = r),
   new Promise(r => tilesImage.onload = r),
   new Promise(r => playerImage.onload = r),
+  new Promise(r => coinImage.onload = r),
   loadLevel("lvl/level1.lvl")
 ]).then(v => {
-  currentLevel = v[3];
-  if (currentLevel) requestAnimationFrame(gameLoop);
+  currentLevel = v[4];
+
+  // Загружаем монетки из файла уровня
+  if (currentLevel && currentLevel.coins) {
+    coins = currentLevel.coins.map(c => ({
+      x: c.x,
+      y: c.y,
+      w: 50,
+      h: 50,
+      collected: false
+    }));
+  }
+
+  if (currentLevel) {
+    requestAnimationFrame(gameLoop);
+  }
 });
 
 // ============================
@@ -146,28 +168,66 @@ function drawLevel(level) {
 }
 
 // ============================
-//  ОТРИСОВКА ИГРОКА (ИСПРАВЛЕНА: УБРАНО ДЁРГАНЬЕ)
+//  ЛОГИКА И ОТРИСОВКА МОНЕТОК
+// ============================
+function updateAndDrawCoins() {
+  coins.forEach(coin => {
+    if (coin.collected) return;
+
+    // 1. Отрисовка
+    const drawX = coin.x - cameraX;
+    if (drawX > -100 && drawX < canvas.width + 100) {
+      ctx.drawImage(coinImage, drawX, coin.y, coin.w, coin.h);
+    }
+
+    // 2. Столкновение с игроком
+    if (
+      player.x < coin.x + coin.w &&
+      player.x + player.w > coin.x &&
+      player.y < coin.y + coin.h &&
+      player.y + player.h > coin.y
+    ) {
+      coin.collected = true;
+      score++;
+
+      // --- НОВОЕ: Играем звук ---
+      coinSound.currentTime = 0; // Сбрасываем звук в начало, чтобы можно было быстро собирать монеты
+      coinSound.play().catch(e => console.log("Sound error:", e));
+    }
+  });
+}
+
+// ============================
+//  ОТРИСОВКА ИНТЕРФЕЙСА (СЧЕТ)
+// ============================
+function drawUI() {
+  const text = "Coins: " + score;
+
+  ctx.font = "bold 26px Arial";
+  ctx.textAlign = "right";
+
+  ctx.strokeStyle = "black";
+  ctx.lineWidth = 4;
+  ctx.strokeText(text, canvas.width - 30, 50);
+
+  ctx.fillStyle = "orange";
+  ctx.fillText(text, canvas.width - 30, 50);
+}
+
+// ============================
+//  ОТРИСОВКА ИГРОКА
 // ============================
 function drawPlayer() {
-  // Проверка, загрузилась ли картинка, чтобы не было ошибок
   if (!playerImage.complete || playerImage.width === 0) return;
 
-  // Округляем ширину кадра, чтобы не было дробей
   const frameWidth = Math.floor(playerImage.width / 4);
   const frameHeight = playerImage.height;
-
-  // Координаты источника (sx всегда целое число)
   const sx = player.frame * frameWidth;
   const sy = 0;
-
-  // Размеры при отрисовке
   const drawH = player.h + 20;
-  // Сохраняем пропорции и сразу округляем ширину
   const scaleRatio = frameWidth / frameHeight;
   const drawW = Math.floor(drawH * scaleRatio);
 
-  // Считаем координаты на экране
-  // Важно: Math.floor в конце убирает "дробные пиксели" и дёрганье
   let drawX = player.x - cameraX - (drawW - player.w) / 2;
   let drawY = player.y - 20;
 
@@ -175,33 +235,23 @@ function drawPlayer() {
   drawY = Math.floor(drawY);
 
   ctx.save();
-
   if (!player.facingRight) {
-    // Отражение по горизонтали
-    // Сдвигаем точку рисования в центр спрайта (тоже округляем)
     ctx.translate(Math.floor(drawX + drawW / 2), Math.floor(drawY + drawH / 2));
     ctx.scale(-1, 1);
-    // Рисуем от центра (-drawW / 2)
     ctx.drawImage(playerImage, sx, sy, frameWidth, frameHeight, -Math.floor(drawW / 2), -Math.floor(drawH / 2), drawW, drawH);
   } else {
-    // Обычная отрисовка
     ctx.drawImage(playerImage, sx, sy, frameWidth, frameHeight, drawX, drawY, drawW, drawH);
   }
   ctx.restore();
-
-  // Раскомментируй для проверки границ
-  // ctx.strokeStyle = "red";
-  // ctx.strokeRect(Math.floor(player.x - cameraX), Math.floor(player.y), player.w, player.h);
 }
 
-
+// ============================
+//  ФИЗИКА ИГРОКА
 // ============================
 function updatePlayer() {
-  // 1. СБРОС СКОРОСТИ
   player.vx = 0;
   let isMoving = false;
 
-  // 2. УПРАВЛЕНИЕ
   if (keys.left) {
     player.vx = -player.speed;
     player.facingRight = false;
@@ -212,17 +262,12 @@ function updatePlayer() {
     isMoving = true;
   }
 
-  // 3. ФИЗИКА
   player.x += player.vx;
   player.y += player.vy;
   player.vy += gravity;
 
-  // 4. КОЛЛИЗИЯ С ПОЛОМ
   const GROUND_Y = 582;
 
-  // --- ВАЖНОЕ ИСПРАВЛЕНИЕ ТУТ: ---
-  // Используем '>=', чтобы когда мы стоим РОВНО на полу, 
-  // игра считала, что мы на земле, а не в воздухе.
   if (player.y + player.h >= GROUND_Y) {
     player.y = GROUND_Y - player.h;
     player.vy = 0;
@@ -231,13 +276,10 @@ function updatePlayer() {
     player.onGround = false;
   }
 
-  // 5. АНИМАЦИЯ
   if (!player.onGround) {
-    // В ВОЗДУХЕ (используем кадр шага, чтобы ноги были врозь)
     player.frame = 2;
   }
   else if (isMoving) {
-    // ИДЕМ
     player.timer++;
     if (player.timer > ANIM_SPEED) {
       player.frame++;
@@ -247,12 +289,10 @@ function updatePlayer() {
     }
   }
   else {
-    // СТОИМ (ЖЕЛЕЗОБЕТОННО)
     player.frame = 0;
     player.timer = 0;
   }
 
-  // 6. КАМЕРА
   cameraX = player.x - canvas.width / 2;
   if (cameraX < 0) cameraX = 0;
 }
@@ -262,10 +302,14 @@ function updatePlayer() {
 // ============================
 function gameLoop() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
   drawBackground();
   drawLevel(currentLevel);
+  updateAndDrawCoins();
   updatePlayer();
   drawPlayer();
+  drawUI();
+
   requestAnimationFrame(gameLoop);
 }
 
